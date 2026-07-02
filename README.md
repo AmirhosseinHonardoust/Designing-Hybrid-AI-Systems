@@ -1,244 +1,308 @@
-# Designing Hybrid AI Systems: Lessons from Building a Graph RAG Engine
+<div align="center">
 
-**Blending Graphs, Vectors, and Language Models for Explainable AI**
+# Designing Hybrid AI Systems
+### Blending Graphs, Vectors, and Language Models for Explainable Retrieval
 
----
+*A design blueprint and set of engineering lessons for building a Graph-Powered RAG engine — systems that don't just answer, but **cite, reason, and explain**.*
 
-## Introduction, The Age of Hybrid Intelligence
+![Status](https://img.shields.io/badge/status-conceptual%20blueprint-orange)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Topic](https://img.shields.io/badge/topic-Graph%20RAG%20%7C%20Explainable%20AI-blue)
 
-In the current AI landscape, two paradigms dominate:
+</div>
 
-- **Neural networks**, which learn complex representations from data, and  
-- **Symbolic systems**, which reason over explicit relationships like graphs or logic.
-
-For years, these worlds were largely separate. Neural models could *predict*, but not *explain*. Symbolic systems could *reason*, but lacked adaptability.  
-The emerging solution? **Hybrid AI**, systems that combine the flexibility of neural networks with the structure and interpretability of graphs.
-
-This article walks through the lessons I learned while designing my own open-source prototype: the **Graph-Powered RAG Engine**, a hybrid framework that merges **Vector Search (FAISS)**, **Graph Reasoning (NetworkX / Neo4j)**, and **RAG Pipelines (LLMs)** into one explainable system.
+> [!NOTE]
+> **What this repository is.** This is a **design article and reference architecture** — a detailed blueprint distilled from prototyping a hybrid retrieval system. It explains *how* to build a Graph-Powered RAG engine and *why* each choice matters. A runnable reference implementation is tracked in the [Roadmap](#roadmap); until it lands, treat the code snippets here as illustrative pseudocode, not a shipped library.
 
 ---
 
-## Why Combine Graphs and Vectors?
+## Table of Contents
 
-Modern Retrieval-Augmented Generation (RAG) systems rely almost entirely on **semantic embeddings**, mapping chunks of text into high-dimensional vectors so that “similar” ideas are close in space.
-
-While effective, purely vector-based retrieval has three limitations:
-
-1. **No structure** | Vectors don’t know relationships like *A mentions B* or *C builds on D*.  
-2. **No explainability** | It’s hard to show *why* two items are related beyond “the model says so.”  
-3. **Context collapse** | Without explicit links, related but non-similar entities are often missed.
-
-Graphs fix this. A graph represents knowledge as **nodes (entities)** and **edges (relationships)**, offering hierarchy, linkage, and transparency.
-
-When we combine them, we get the best of both worlds:
-- Vectors capture *meaning*.
-- Graphs capture *connections*.
-- Together, they enable *reasoned retrieval*.
+- [Why Hybrid Retrieval?](#why-hybrid-retrieval)
+- [The Core Idea: Vectors + Graphs](#the-core-idea-vectors--graphs)
+- [System Architecture](#system-architecture)
+- [How It Works, Component by Component](#how-it-works-component-by-component)
+  - [1. Ingestion](#1-ingestion)
+  - [2. Graph Construction](#2-graph-construction)
+  - [3. Vector Search](#3-vector-search)
+  - [4. Graph Expansion & Hybrid Scoring](#4-graph-expansion--hybrid-scoring)
+  - [5. Answer Composition & Traceability](#5-answer-composition--traceability)
+  - [6. Serving Layer](#6-serving-layer)
+- [Evaluating a Hybrid Retriever](#evaluating-a-hybrid-retriever)
+- [Engineering Lessons](#engineering-lessons)
+- [Where This Is Useful](#where-this-is-useful)
+- [Proposed Repository Structure](#proposed-repository-structure)
+- [Roadmap](#roadmap)
+- [References](#references)
+- [License](#license)
 
 ---
 
-## System Overview
+## Why Hybrid Retrieval?
 
-Here’s the conceptual pipeline I implemented:
+Modern Retrieval-Augmented Generation (RAG) leans almost entirely on **semantic embeddings**: text is mapped into high-dimensional vectors so that semantically similar passages sit close together. This works well, but pure vector retrieval has three structural weaknesses:
+
+<div align="center">
+
+| Limitation | What goes wrong |
+|---|---|
+| **No structure** | Vectors encode similarity, not relationships. They can't express *"A cites B"* or *"C builds on D."* |
+| **No explainability** | You can rank passages by cosine distance, but you can't easily justify *why* two items are related beyond "the model said so." |
+| **Context collapse** | Items that are related but not textually similar (e.g., a definition and its distant application) are often missed entirely. |
+</div>
+
+Knowledge graphs address exactly these gaps. A graph represents information as **nodes** (entities) and **edges** (typed relationships), giving you hierarchy, explicit linkage, and an auditable trail.
+
+## The Core Idea: Vectors + Graphs
+
+The two representations are complementary rather than competing:
+
+- **Vectors capture meaning** — fuzzy semantic proximity.
+- **Graphs capture connections** — explicit, typed, traversable relationships.
+
+Used together, they enable *reasoned retrieval*: the vector layer finds plausible candidates, and the graph layer expands, re-ranks, and — crucially — **explains** them. That explanation is the whole point; it is the difference between a system that returns an answer and one a domain expert is willing to trust.
+
+## System Architecture
 
 ```
-            ┌───────────────────────────────┐
-            │          Documents            │
-            └───────────────┬───────────────┘
-                            │
-                            ▼
-                 ┌────────────────────┐
-                 │ Text Chunking +    │
-                 │ Concept Extraction │
-                 └────────────────────┘
-                            │
-                            ▼
-     ┌────────────┐   ┌─────────────┐   ┌────────────┐
-     │ Vector DB  │   │ Graph Store │   │  Metadata  │
-     │ (FAISS)    │   │ (NetworkX)  │   │ (Docs, IDs)│
-     └────┬───────┘   └──────┬──────┘   └────┬───────┘
-          │                  │               │
-          └────────────┬─────┘               │
-                       ▼                     │
-              ┌────────────────────┐         │
-              │ Hybrid Retriever   │─────────┘
-              │ (Vector + Graph)   │
-              └─────────┬──────────┘
-                        ▼
-              ┌────────────────────┐
-              │  RAG Composition   │
-              │ + Citations & Paths│
-              └─────────┬──────────┘
-                        ▼
-              ┌────────────────────┐
-              │ Streamlit Frontend │
-              └────────────────────┘
+                       ┌──────────────────────┐
+                       │      Documents       │
+                       └──────────┬───────────┘
+                                  ▼
+                    ┌───────────────────────────┐
+                    │  Chunking + Concept       │
+                    │  Extraction (NER/KeyBERT) │
+                    └──────────┬────────────────┘
+                               ▼
+        ┌───────────────┬──────────────┬────────────────┐
+        ▼               ▼              ▼                │
+ ┌────────────┐  ┌─────────────┐  ┌────────────┐        │
+ │ Vector DB  │  │ Graph Store │  │  Metadata  │        │
+ │  (FAISS)   │  │ (NetworkX / │  │ (docs, IDs)│        │
+ │            │  │   Neo4j)    │  │            │        │
+ └─────┬──────┘  └──────┬──────┘  └─────┬──────┘        │
+       └───────────┬────┴───────────────┘               │
+                   ▼                                    │
+          ┌────────────────────┐                        │
+          │  Hybrid Retriever  │◄───────────────────────┘
+          │  (vector + graph)  │
+          └─────────┬──────────┘
+                    ▼
+          ┌────────────────────┐
+          │  Answer Composer   │
+          │ + citations + paths│
+          └─────────┬──────────┘
+                    ▼
+        ┌──────────────────────────┐
+        │  FastAPI service (/ask)  │  ── REST API layer
+        └─────────┬────────────────┘
+                  ▼
+        ┌──────────────────────────┐
+        │   Streamlit front-end    │  ── calls the API, renders
+        │  (answer, cites, paths)  │     answers, citations, graph paths
+        └──────────────────────────┘
 ```
 
----
+> The API and UI are drawn as separate layers on purpose: a **FastAPI** service owns retrieval and exposes `/ask`, while the **Streamlit** app is a thin client that calls it. This split keeps the engine reusable outside the demo UI.
 
-## Core Components in Detail
+## How It Works, Component by Component
 
-### Ingestion Pipeline
-The ingestion step converts raw documents into a structured, searchable knowledge base.
+### 1. Ingestion
 
-**Steps:**
-- **Chunking:** Split long texts into manageable semantic units (~512–1024 tokens).
-- **Concept Extraction:** Identify important terms using NER or keyword models (spaCy, KeyBERT).
-- **Embedding:** Use a transformer model (e.g., `all-MiniLM-L6-v2`) to embed each chunk into a vector space.
-- **Storage:**  
-  - Store embeddings in **FAISS** for fast Approximate Nearest Neighbor (ANN) search.  
-  - Build nodes and edges in a **Graph Store (NetworkX or Neo4j)**.
+Ingestion turns raw documents into a structured, searchable knowledge base:
 
-Example chunk schema:
+- **Chunking** — split long text into semantic units (~256–512 tokens works well for retrieval; larger chunks dilute relevance).
+- **Concept extraction** — pull key entities/terms with an NER model (spaCy) or a keyword model (KeyBERT).
+- **Embedding** — encode each chunk with a sentence transformer, e.g. `all-MiniLM-L6-v2` (384-dimensional output; fast and a strong baseline).
+- **Storage** — write vectors to **FAISS** for approximate nearest-neighbor (ANN) search, and materialize nodes/edges in the **graph store**.
+
+Example chunk record:
+
 ```json
 {
   "id": "doc1_chunk_0",
-  "text": "FAISS is a library for efficient similarity search and clustering.",
-  "concepts": ["faiss", "similarity", "clustering"],
+  "text": "FAISS is a library for efficient similarity search and clustering of dense vectors.",
+  "concepts": ["faiss", "similarity search", "clustering"],
   "doc_id": "doc1",
   "url": "file://docs/faiss_notes.md"
 }
 ```
 
----
+### 2. Graph Construction
 
-### Graph Construction
+Edges are what make retrieval explainable. A minimal, expressive schema:
 
-Graph relationships encode explainable context.  
-Typical relationships:
-- `Doc → HAS_CHUNK → Chunk`
-- `Chunk → MENTIONS → Concept`
-- `Concept → RELATED_TO → Concept`
-- `Author → WROTE → Doc`
+- `(:Doc)-[:HAS_CHUNK]->(:Chunk)`
+- `(:Chunk)-[:MENTIONS]->(:Concept)`
+- `(:Concept)-[:RELATED_TO]->(:Concept)`
+- `(:Author)-[:WROTE]->(:Doc)`
 
-Each connection enriches reasoning capability.
-
-You can compute **PageRank** over the Doc subgraph to estimate authority and blend it into retrieval scoring.
+You can then use graph algorithms to inform ranking. To estimate document authority with **PageRank in Neo4j**, use the Graph Data Science (GDS) library — note this is a genuine PageRank computation, not a mention count:
 
 ```cypher
-MATCH (d:Doc)-[:HAS_CHUNK]->(:Chunk)-[:MENTIONS]->(:Concept)
-RETURN d.title, count(*) AS mentions
-ORDER BY mentions DESC
+// Project a subgraph, then run PageRank over it
+CALL gds.graph.project(
+  'docGraph',
+  ['Doc', 'Concept'],
+  { MENTIONS: { orientation: 'UNDIRECTED' } }
+)
+
+CALL gds.pageRank.stream('docGraph')
+YIELD nodeId, score
+RETURN gds.util.asNode(nodeId).title AS title, score
+ORDER BY score DESC;
 ```
 
----
+> On a small local graph you can skip Neo4j entirely and call `networkx.pagerank(G)` — same algorithm, one line.
 
-### Vector Search (FAISS)
-FAISS handles raw semantic similarity queries efficiently:
+### 3. Vector Search
+
+FAISS handles dense similarity efficiently. One detail matters for correctness: to get **cosine** similarity you must L2-normalize vectors and use an inner-product index, not the default L2 index.
+
 ```python
-D, I = index.search(query_vector, k=10)
+import faiss, numpy as np
+
+# Cosine similarity = inner product on L2-normalized vectors
+faiss.normalize_L2(embeddings)
+index = faiss.IndexFlatIP(embeddings.shape[1])
+index.add(embeddings)
+
+faiss.normalize_L2(query_vector)
+scores, ids = index.search(query_vector, k=10)  # higher score = more similar
 ```
-Each vector retrieval gives us candidate chunks, but we don’t stop there.
 
----
+These candidates are only the starting point — the graph layer refines them next.
 
-### Graph Expansion and Hybrid Scoring
+### 4. Graph Expansion & Hybrid Scoring
+
 After the initial ANN retrieval:
-1. Take the top chunks.
-2. Expand to their neighboring nodes in the graph (related concepts, sibling chunks, etc.).
-3. Rerank candidates using a **hybrid score**:
-   ```
-   score = 0.6 * embedding_similarity
-         + 0.25 * concept_overlap
-         + 0.15 * pagerank
-   ```
 
-This combines dense semantics, symbolic overlap, and graph authority.
+1. Take the top-*k* chunks.
+2. Expand along their graph neighborhood (sibling chunks, shared concepts, related documents).
+3. Re-rank the merged candidate set with a **hybrid score**.
 
----
+The critical subtlety the naive version gets wrong: the three signals live on **different scales** (cosine ∈ [0,1], concept overlap as Jaccard ∈ [0,1], but raw PageRank values sum to 1 across the whole graph and are therefore tiny). Blend them only *after* normalizing each into a common range:
 
-### Reasoning and Answer Composition
-The RAG engine combines top chunks into a contextual answer.  
-Even without an LLM, extractive answers are constructed from retrieved passages with citations and *reasoning paths*.
+```python
+def hybrid_score(sim, overlap, pr, norms):
+    # norms holds min/max (or mean/std) collected over the candidate set
+    sim_n     = minmax(sim,     norms.sim)      # semantic similarity  -> [0,1]
+    overlap_n = minmax(overlap, norms.overlap)  # symbolic overlap     -> [0,1]
+    pr_n      = minmax(pr,      norms.pr)        # graph authority      -> [0,1]
+    return 0.60 * sim_n + 0.25 * overlap_n + 0.15 * pr_n
+```
 
-> **Answer:**  
-> FAISS is a library for efficient similarity search and clustering of dense vectors. It enables approximate nearest neighbor retrieval at scale.  
->  
-> **Sources:**  
-> - [faiss_notes.md](file://docs/faiss_notes.md)
+Without that normalization, the PageRank term contributes essentially nothing and the "authority" weight is a no-op. Treat `0.60 / 0.25 / 0.15` as a starting point to tune against a labeled set, not a universal constant.
 
-> **Why these sources:**  
-> Query concept “similarity” connected via concept “embedding” → mentioned in `faiss_notes.md`.
+### 5. Answer Composition & Traceability
 
-This traceability builds user trust, something most LLMs still lack.
+The composer assembles the top passages into a response. Two modes:
 
----
+- **Extractive** (no LLM): stitch retrieved passages together with citations — deterministic, cheap, fully grounded.
+- **Generative** (with an LLM): pass the passages as context for a fluent answer. *This* is the "G" in RAG; the extractive mode is retrieval-plus-extraction and is worth distinguishing explicitly.
 
-### Frontend Interface
-The Streamlit app connects everything.  
-Users can:
-- Ask questions via `/ask`
-- View answer + citations
-- Expand “Why these?” to inspect graph paths
-- Explore document similarity recommendations
+Either way, every answer ships with its provenance:
 
-A clean UI encourages exploration, essential for explainability.
+> **Answer.** FAISS is a library for efficient similarity search and clustering of dense vectors, enabling approximate nearest-neighbor retrieval at scale.
+>
+> **Sources.** `faiss_notes.md`
+>
+> **Why these sources.** Query concept *similarity* → linked via *embedding* → mentioned in `faiss_notes.md`.
 
----
+That "why" trail — the actual graph path from query to evidence — is the feature most pure-LLM pipelines can't produce.
 
-## Key Lessons Learned
+### 6. Serving Layer
 
-### 1. Graphs Don’t Replace Vectors, They Complete Them
-Vectors capture meaning; graphs capture relationships.  
-A hybrid design achieves higher recall, richer connections, and explainable reasoning.
+A **FastAPI** service exposes the engine (`POST /ask`), and a **Streamlit** front-end calls it to let users:
 
-### 2. Design for Swapability
-Keep components modular, embeddings, vector DB, graph DB, and UI should be easily replaceable.
+- ask a question and read the answer with inline citations,
+- expand a *"Why these?"* panel to inspect the graph path,
+- browse document-similarity recommendations.
 
-### 3. Explainability is UX
-Graph paths make AI reasoning visible, improving user trust and transparency.
+Keeping the engine behind an API (rather than inside the Streamlit script) means the same retrieval logic can back a UI, a batch job, or another service without change.
 
-### 4. Start Small, Scale Later
-Prototype locally with NetworkX + FAISS + Streamlit.  
-Then scale up to Neo4j, Pinecone, and cloud APIs.
+## Evaluating a Hybrid Retriever
 
-### 5. Evaluation is Everything
-Track recall@k, grounding rate, and latency to measure retrieval quality.
+If explainability is the selling point, **measurement is the proof**. Track at minimum:
 
----
+- **Recall@k** — fraction of relevant chunks retrieved in the top *k*.
+- **Grounding rate** — fraction of answer claims traceable to a cited source.
+- **Latency** — end-to-end p50/p95, since graph expansion adds cost.
 
-## Real-World Applications
+> [!IMPORTANT]
+> The table below is an **illustrative template**, not measured results — it shows the shape of an ablation you should run, so vector-only can be compared against the hybrid design on your own corpus. Fill it with real numbers before citing any improvement.
 
-| Domain | Use Case |
-|---------|-----------|
-| Enterprise Knowledge Systems | Explainable QA systems |
-| Healthcare & Law | Traceable AI reasoning |
-| Education | Teaching assistants that explain their answers |
+<div align="center">
+
+| Configuration | Recall@10 | Grounding rate | p95 latency |
+|---|---|---|---|
+| Vector-only (FAISS) | *your baseline* | *your baseline* | *your baseline* |
+| + Graph expansion | *measure* | *measure* | *measure* |
+| + Hybrid re-ranking | *measure* | *measure* | *measure* |
+</div>
+
+Publishing this table with real numbers is what turns "graphs help" from a claim into a result.
+
+## Engineering Lessons
+
+**Graphs and vectors are complementary, not interchangeable.** The vector layer maximizes recall of plausible candidates; the graph layer adds precision, connective context, and an audit trail. Neither alone gives you both.
+
+**Design for swappability.** Keep the embedding model, vector store, graph store, and UI behind clean interfaces. You *will* want to swap MiniLM for a larger encoder, or NetworkX for Neo4j, without touching the rest.
+
+**Explainability is a UX feature, not a footnote.** A visible graph path is what converts a skeptical domain expert into a user. Build the "why" surface as a first-class part of the product.
+
+**Start local, scale later.** NetworkX + FAISS + Streamlit runs on a laptop and is enough to validate the idea. Move to Neo4j, a managed vector DB, and hosted LLMs only once the design earns it.
+
+**Measure before you claim.** "Higher recall" and "better answers" mean nothing without the ablation above. Instrument recall@k, grounding, and latency from day one.
+
+## Where This Is Useful
+
+<div align="center">
+
+| Domain | Use case |
+|---|---|
+| Enterprise knowledge | Explainable Q&A over internal docs with citations |
+| Healthcare & law | Traceable reasoning where provenance is mandatory |
+| Education | Tutors that show *why* an answer follows from sources |
 | Research | Graph-enhanced literature exploration |
-| Recommender Systems | Content and author graph recommendations |
+| Recommendation | Content- and author-graph suggestions |
+</div>
 
----
+## Proposed Repository Structure
 
-## The Future: Graph-Augmented LLMs
+The layout the reference implementation will follow:
 
-Next-gen assistants will **reason over graphs dynamically**:  
-- GNN-based embeddings for relationship reasoning  
-- Agentic LLMs that traverse graphs for context  
-- Node-based grounding for fact attribution
+```
+.
+├── src/
+│   ├── ingest/          # chunking, concept extraction, embedding
+│   ├── graph/           # graph construction + PageRank
+│   ├── retrieve/        # FAISS search, graph expansion, hybrid scoring
+│   ├── compose/         # extractive + generative answer composition
+│   └── api/             # FastAPI service (/ask)
+├── app/                 # Streamlit front-end
+├── eval/                # recall@k, grounding, latency harness
+├── data/                # sample corpus
+├── requirements.txt
+└── README.md
+```
 
----
+## Roadmap
 
-## Takeaway
+- [ ] Reference implementation of the ingestion → retrieval → compose pipeline
+- [ ] FastAPI `/ask` service + Streamlit client
+- [ ] Evaluation harness with a sample corpus and a filled-in ablation table
+- [ ] Optional Neo4j GDS backend for PageRank at scale
+- [ ] Screenshots / demo GIF of the "Why these?" graph-path panel
 
-> *Intelligence emerges from structure and semantics working together.*
+## References
 
-Graphs bring order, vectors bring nuance, together they make AI systems **smarter, interpretable, and human-aligned**.
+1. Johnson, J., Douze, M., & Jégou, H. (2019). *Billion-scale similarity search with GPUs.* IEEE Transactions on Big Data. — [FAISS](https://github.com/facebookresearch/faiss)
+2. Lewis, P., et al. (2020). *Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks.* NeurIPS.
+3. Reimers, N., & Gurevych, I. (2019). *Sentence-BERT: Sentence Embeddings using Siamese BERT-Networks.* EMNLP. — [SentenceTransformers](https://www.sbert.net/)
+4. Page, L., et al. (1999). *The PageRank Citation Ranking.* — implemented in [Neo4j GDS](https://neo4j.com/docs/graph-data-science/current/) and [NetworkX](https://networkx.org/)
+5. [Streamlit](https://streamlit.io/) · [FastAPI](https://fastapi.tiangolo.com/) · [KeyBERT](https://github.com/MaartenGr/KeyBERT)
 
----
+## License
 
-## Resources
-
-- [FAISS](https://github.com/facebookresearch/faiss)  
-- [NetworkX](https://networkx.org/)  
-- [Neo4j AuraDB](https://neo4j.com/cloud/aura/)  
-- [SentenceTransformers](https://www.sbert.net/)  
-- [Streamlit](https://streamlit.io/)  
-- [OpenAI API](https://platform.openai.com/docs/introduction)
-
----
-
-## Conclusion
-
-Hybrid AI is the path toward explainable intelligence, where every answer can be traced, justified, and improved.  
-By combining vectors and graphs, we move closer to **AI that not only answers, but reasons.**
+Released under the [MIT License](LICENSE).
