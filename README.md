@@ -8,7 +8,7 @@
 ![Status](https://img.shields.io/badge/status-conceptual%20blueprint-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Topic](https://img.shields.io/badge/topic-Graph%20RAG%20%7C%20Explainable%20AI-blue)
-
+  
 </div>
 
 > [!NOTE]
