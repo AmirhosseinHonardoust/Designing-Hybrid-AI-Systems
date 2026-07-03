@@ -1,5 +1,5 @@
 <div align="center">
-  
+   
 # Designing Hybrid AI Systems
 ### Blending Graphs, Vectors, and Language Models for Explainable Retrieval
 
