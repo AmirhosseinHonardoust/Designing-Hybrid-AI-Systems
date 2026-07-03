@@ -2,7 +2,7 @@
          
 # Designing Hybrid AI Systems
 ### Blending Graphs, Vectors, and Language Models for Explainable Retrieval
-
+  
 *A design blueprint and set of engineering lessons for building a Graph-Powered RAG engine — systems that don't just answer, but **cite, reason, and explain**.*
   
 ![Status](https://img.shields.io/badge/status-conceptual%20blueprint-orange)
